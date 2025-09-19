@@ -2,7 +2,6 @@ package orders
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -14,17 +13,16 @@ import (
 	"github.com/zero-net-panel/zero-net-panel/internal/security"
 	"github.com/zero-net-panel/zero-net-panel/internal/svc"
 	"github.com/zero-net-panel/zero-net-panel/internal/types"
-	"github.com/zero-net-panel/zero-net-panel/pkg/metrics"
 )
 
-// CancelLogic handles administrative order cancellation.
+// CancelLogic handles administrative order cancellations.
 type CancelLogic struct {
 	logx.Logger
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 }
 
-// NewCancelLogic constructs CancelLogic.
+// NewCancelLogic constructs the admin cancellation logic.
 func NewCancelLogic(ctx context.Context, svcCtx *svc.ServiceContext) *CancelLogic {
 	return &CancelLogic{
 		Logger: logx.WithContext(ctx),
@@ -33,90 +31,80 @@ func NewCancelLogic(ctx context.Context, svcCtx *svc.ServiceContext) *CancelLogi
 	}
 }
 
-// Cancel applies cancellation with optional override for already paid orders.
-func (l *CancelLogic) Cancel(req *types.AdminCancelOrderRequest) (resp *types.AdminOrderResponse, err error) {
-	start := time.Now()
-	defer func() {
-		result := "success"
-		if err != nil {
-			result = "error"
-		}
-		metrics.ObserveOrderCancel("admin", result, time.Since(start))
-	}()
-
-	user, ok := security.UserFromContext(l.ctx)
+// Cancel updates order status to cancelled when eligible.
+func (l *CancelLogic) Cancel(req *types.AdminCancelOrderRequest) (*types.AdminOrderResponse, error) {
+	actor, ok := security.UserFromContext(l.ctx)
 	if !ok {
 		return nil, repository.ErrUnauthorized
 	}
-	if !security.HasRole(user, "admin") {
+	if !security.HasRole(actor, "admin") {
 		return nil, repository.ErrForbidden
 	}
-	if req.OrderID == 0 {
+
+	order, items, err := l.svcCtx.Repositories.Order.Get(l.ctx, req.OrderID)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.EqualFold(order.Status, repository.OrderStatusCancelled) {
+		return l.buildResponse(order, items)
+	}
+
+	if strings.EqualFold(order.Status, repository.OrderStatusPaid) {
+		if order.TotalCents > 0 && order.RefundedCents < order.TotalCents {
+			return nil, repository.ErrInvalidArgument
+		}
+	} else if !strings.EqualFold(order.Status, repository.OrderStatusPending) {
 		return nil, repository.ErrInvalidArgument
 	}
 
-	var updatedOrder repository.Order
+	var updated repository.Order
 	err = l.svcCtx.DB.WithContext(l.ctx).Transaction(func(tx *gorm.DB) error {
-		orderRepo, repoErr := repository.NewOrderRepository(tx)
-		if repoErr != nil {
-			return repoErr
+		repo, err := repository.NewOrderRepository(tx)
+		if err != nil {
+			return err
 		}
 
-		order, repoErr := orderRepo.GetForUpdate(l.ctx, req.OrderID)
-		if repoErr != nil {
-			return repoErr
+		cancelledAt := time.Now().UTC()
+		if req.CancelledAt != nil && *req.CancelledAt > 0 {
+			cancelledAt = time.Unix(*req.CancelledAt, 0).UTC()
 		}
 
-		if order.Status == repository.OrderStatusCancelled {
-			updatedOrder = order
-			return nil
+		metadata := map[string]any{
+			"cancelled_by": actor.Email,
 		}
-		if order.Status == repository.OrderStatusPaid && !req.AllowPaid {
-			return repository.ErrInvalidState
-		}
-
-		now := time.Now().UTC()
-		order.Status = repository.OrderStatusCancelled
-		order.CancelledAt = &now
-		if order.Metadata == nil {
-			order.Metadata = make(map[string]any)
-		}
-		order.Metadata["cancelled_by"] = fmt.Sprintf("admin:%d", user.ID)
-		order.Metadata["cancelled_at"] = now
-		if reason := strings.TrimSpace(req.Reason); reason != "" {
-			order.Metadata["cancel_reason"] = reason
-		}
-		if note := strings.TrimSpace(req.Note); note != "" {
-			order.Metadata["cancel_note"] = note
+		reason := strings.TrimSpace(req.Reason)
+		if reason != "" {
+			metadata["cancel_reason"] = reason
 		}
 
-		saved, repoErr := orderRepo.Save(l.ctx, order)
-		if repoErr != nil {
-			return repoErr
+		params := repository.UpdateOrderStatusParams{
+			Status:        repository.OrderStatusCancelled,
+			CancelledAt:   &cancelledAt,
+			MetadataPatch: metadata,
 		}
-		updatedOrder = saved
+
+		updatedOrder, err := repo.UpdateStatus(l.ctx, req.OrderID, params)
+		if err != nil {
+			return err
+		}
+		updated = updatedOrder
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	itemsMap, err := l.svcCtx.Repositories.Order.ListItems(l.ctx, []uint64{updatedOrder.ID})
-	if err != nil {
-		return nil, err
-	}
-	refundsMap, err := l.svcCtx.Repositories.Order.ListRefunds(l.ctx, []uint64{updatedOrder.ID})
-	if err != nil {
-		return nil, err
-	}
+	return l.buildResponse(updated, items)
+}
 
-	detail := orderutil.ToOrderDetail(updatedOrder, itemsMap[updatedOrder.ID], refundsMap[updatedOrder.ID])
-	u, err := l.svcCtx.Repositories.User.Get(l.ctx, updatedOrder.UserID)
+func (l *CancelLogic) buildResponse(order repository.Order, items []repository.OrderItem) (*types.AdminOrderResponse, error) {
+	detail := orderutil.ToOrderDetail(order, items)
+	u, err := l.svcCtx.Repositories.User.Get(l.ctx, order.UserID)
 	if err != nil {
 		return nil, err
 	}
-
-	resp = &types.AdminOrderResponse{
+	resp := types.AdminOrderResponse{
 		Order: types.AdminOrderDetail{
 			OrderDetail: detail,
 			User: types.OrderUserSummary{
@@ -126,5 +114,5 @@ func (l *CancelLogic) Cancel(req *types.AdminCancelOrderRequest) (resp *types.Ad
 			},
 		},
 	}
-	return resp, nil
+  return &resp, nil
 }

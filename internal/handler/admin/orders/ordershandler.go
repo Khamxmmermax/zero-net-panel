@@ -52,7 +52,7 @@ func AdminGetOrderHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// AdminMarkOrderPaidHandler marks an order as paid manually.
+// AdminMarkOrderPaidHandler marks an order as paid by an administrator.
 func AdminMarkOrderPaidHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.AdminMarkOrderPaidRequest
@@ -92,7 +92,7 @@ func AdminCancelOrderHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// AdminRefundOrderHandler records a refund for the given order.
+// AdminRefundOrderHandler performs a balance refund for an order.
 func AdminRefundOrderHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.AdminRefundOrderRequest

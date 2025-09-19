@@ -131,6 +131,15 @@ var migrationRegistry = []Migration{
 			)
 		},
 	},
+	{
+		Version: 2024071501,
+		Name:    "order-refund-tracking",
+		Up: func(ctx context.Context, db *gorm.DB) error {
+			return db.WithContext(ctx).AutoMigrate(
+				&repository.Order{},
+			)
+		},
+	},
 }
 
 func init() {
@@ -140,10 +149,7 @@ func init() {
 }
 
 // Apply executes migrations up to targetVersion (0 denotes latest).
-// When withSeed is true, demo seed data will be populated after the
-// migrations have been successfully applied. Seeding currently requires
-// running against the latest schema (target version 0).
-func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, withSeed bool, allowRollback bool) (*ApplyResult, error) {
+func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, allowRollback bool) error {
 	if db == nil {
 		return nil, fmt.Errorf("migrations: database connection is required")
 	}
@@ -153,8 +159,8 @@ func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, withSeed bool
 	}
 
 	var applied []SchemaMigration
-	if err := db.WithContext(ctx).Order("version ASC").Find(&applied).Error; err != nil {
-		return nil, fmt.Errorf("migrations: load applied versions: %w", err)
+	if result := db.WithContext(ctx).Order("version ASC").Find(&applied); result.Error != nil {
+		return fmt.Errorf("migrations: load applied versions: %w", result.Error)
 	}
 
 	appliedSet := make(map[uint64]SchemaMigration, len(applied))
@@ -167,14 +173,11 @@ func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, withSeed bool
 		}
 	}
 
-	result := &ApplyResult{
-		PreviousVersion: currentVersion,
-		CurrentVersion:  currentVersion,
-		Applied:         make([]SchemaMigration, 0),
-	}
-
-	if targetVersion != 0 && targetVersion < currentVersion && !allowRollback {
-		return nil, fmt.Errorf("migrations: target version %d is older than current version %d", targetVersion, currentVersion)
+	if targetVersion != 0 && targetVersion < currentVersion {
+		if !allowRollback {
+			return fmt.Errorf("migrations: target version %d is older than current version %d", targetVersion, currentVersion)
+		}
+		return fmt.Errorf("migrations: rollback to version %d from %d is not implemented", targetVersion, currentVersion)
 	}
 
 	for version := range appliedSet {
@@ -193,41 +196,22 @@ func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, withSeed bool
 	}
 	result.TargetVersion = effectiveTarget
 
-	if effectiveTarget < currentVersion && !allowRollback {
-		result.AfterVersion = currentVersion
-		return result, fmt.Errorf("migrations: target version %d is older than current version %d; enable rollback (e.g. --rollback) to continue", effectiveTarget, currentVersion)
-	}
-
-	if effectiveTarget > currentVersion {
-		for _, m := range migrationRegistry {
-			if m.Version > effectiveTarget {
-				break
-			}
-			if _, ok := appliedSet[m.Version]; ok {
-				continue
-			}
-
-			if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				if err := m.Up(ctx, tx); err != nil {
-					return err
-				}
-				record := SchemaMigration{
-					Version:   m.Version,
-					Name:      m.Name,
-					AppliedAt: time.Now().UTC(),
-				}
-				if err := tx.Create(&record).Error; err != nil {
-					return err
-				}
-				return nil
-			}); err != nil {
-				result.AfterVersion = currentVersion
-				return result, fmt.Errorf("migrations: apply %d (%s): %w", m.Version, m.Name, err)
-			}
-			result.Applied = append(result.Applied, record)
-			if record.Version > result.CurrentVersion {
-				result.CurrentVersion = record.Version
-			}
+  var entry SchemaMigration
+  if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+    if err := m.Up(ctx, tx); err != nil {
+      return err
+    }
+    appliedAt := time.Now().UTC()
+    entry = SchemaMigration{
+      Version:   m.Version,
+      Name:      m.Name,
+      AppliedAt: appliedAt,
+    }
+    if result := tx.Create(&entry); result.Error != nil {
+      return result.Error
+    } else if result.RowsAffected != 1 {
+      return fmt.Errorf("migrations: record version %d affected %d rows", m.Version, result.RowsAffected)
+    }
 			return nil
 		}); err != nil {
 			return nil, fmt.Errorf("migrations: apply %d (%s): %w", m.Version, m.Name, err)
@@ -242,7 +226,10 @@ func Apply(ctx context.Context, db *gorm.DB, targetVersion uint64, withSeed bool
 		if err := seed.Run(ctx, db); err != nil {
 			return nil, fmt.Errorf("migrations: seed demo data: %w", err)
 		}
-		result.Seeded = true
+		appliedSet[m.Version] = entry
+		if entry.Version > currentVersion {
+			currentVersion = entry.Version
+		}
 	}
 
 	return result, nil

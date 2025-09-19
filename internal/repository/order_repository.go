@@ -33,6 +33,8 @@ type Order struct {
 	PaymentMethod string         `gorm:"size:32"`
 	TotalCents    int64          `gorm:"column:total_cents"`
 	Currency      string         `gorm:"size:16"`
+	RefundedCents int64          `gorm:"column:refunded_cents"`
+	RefundedAt    *time.Time     `gorm:"column:refunded_at"`
 	PaidAt        *time.Time     `gorm:"column:paid_at"`
 	CancelledAt   *time.Time     `gorm:"column:cancelled_at"`
 	RefundedCents int64          `gorm:"column:refunded_cents"`
@@ -98,8 +100,8 @@ type OrderRepository interface {
 	Save(ctx context.Context, order Order) (Order, error)
 	List(ctx context.Context, opts ListOrdersOptions) ([]Order, int64, error)
 	ListItems(ctx context.Context, orderIDs []uint64) (map[uint64][]OrderItem, error)
-	ListRefunds(ctx context.Context, orderIDs []uint64) (map[uint64][]OrderRefund, error)
-	CreateRefund(ctx context.Context, refund OrderRefund) (OrderRefund, error)
+	UpdateStatus(ctx context.Context, id uint64, params UpdateOrderStatusParams) (Order, error)
+	AddRefund(ctx context.Context, id uint64, params AddRefundParams) (Order, error)
 }
 
 type orderRepository struct {

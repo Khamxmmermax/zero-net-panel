@@ -13,10 +13,9 @@ import (
 	"github.com/zero-net-panel/zero-net-panel/internal/security"
 	"github.com/zero-net-panel/zero-net-panel/internal/svc"
 	"github.com/zero-net-panel/zero-net-panel/internal/types"
-	"github.com/zero-net-panel/zero-net-panel/pkg/metrics"
 )
 
-// CancelLogic handles user initiated order cancellation.
+// CancelLogic handles user initiated order cancellations.
 type CancelLogic struct {
 	logx.Logger
 	ctx    context.Context
@@ -32,89 +31,79 @@ func NewCancelLogic(ctx context.Context, svcCtx *svc.ServiceContext) *CancelLogi
 	}
 }
 
-// Cancel transitions a pending order into cancelled status and returns the updated snapshot.
-func (l *CancelLogic) Cancel(req *types.UserCancelOrderRequest) (resp *types.UserOrderResponse, err error) {
-	start := time.Now()
-	defer func() {
-		result := "success"
-		if err != nil {
-			result = "error"
-		}
-		metrics.ObserveOrderCancel("user", result, time.Since(start))
-	}()
-
+// Cancel transitions a pending order into the cancelled state.
+func (l *CancelLogic) Cancel(req *types.UserCancelOrderRequest) (*types.UserOrderResponse, error) {
 	user, ok := security.UserFromContext(l.ctx)
 	if !ok {
 		return nil, repository.ErrUnauthorized
 	}
-	if req.OrderID == 0 {
-		return nil, repository.ErrInvalidArgument
+
+	order, items, err := l.svcCtx.Repositories.Order.Get(l.ctx, req.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	if order.UserID != user.ID {
+		return nil, repository.ErrForbidden
 	}
 
-	var updatedOrder repository.Order
+	if strings.EqualFold(order.Status, repository.OrderStatusCancelled) {
+		balance, err := l.svcCtx.Repositories.Balance.GetBalance(l.ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		detail := orderutil.ToOrderDetail(order, items)
+		resp := types.UserOrderResponse{
+			Order:   detail,
+			Balance: orderutil.ToBalanceSnapshot(balance),
+		}
+		return &resp, nil
+	}
+
+	if !strings.EqualFold(order.Status, repository.OrderStatusPending) {
+		if !(strings.EqualFold(order.Status, repository.OrderStatusPaid) && order.TotalCents == 0) {
+			return nil, repository.ErrInvalidArgument
+		}
+	}
+
+	var updated repository.Order
 	err = l.svcCtx.DB.WithContext(l.ctx).Transaction(func(tx *gorm.DB) error {
-		orderRepo, repoErr := repository.NewOrderRepository(tx)
-		if repoErr != nil {
-			return repoErr
+		repo, err := repository.NewOrderRepository(tx)
+		if err != nil {
+			return err
 		}
-
-		order, repoErr := orderRepo.GetForUpdate(l.ctx, req.OrderID)
-		if repoErr != nil {
-			return repoErr
-		}
-		if order.UserID != user.ID {
-			return repository.ErrForbidden
-		}
-
-		if order.Status == repository.OrderStatusCancelled {
-			updatedOrder = order
-			return nil
-		}
-		if order.Status != repository.OrderStatusPending {
-			return repository.ErrInvalidState
-		}
-
 		now := time.Now().UTC()
-		order.Status = repository.OrderStatusCancelled
-		order.CancelledAt = &now
-		if order.Metadata == nil {
-			order.Metadata = make(map[string]any)
+		metadata := map[string]any{
+			"cancelled_by": "user",
 		}
-		if reason := strings.TrimSpace(req.Reason); reason != "" {
-			order.Metadata["cancel_reason"] = reason
+		reason := strings.TrimSpace(req.Reason)
+		if reason != "" {
+			metadata["cancel_reason"] = reason
 		}
-		order.Metadata["cancelled_by"] = "user"
-		order.Metadata["cancelled_at"] = now
-
-		saved, repoErr := orderRepo.Save(l.ctx, order)
-		if repoErr != nil {
-			return repoErr
+		params := repository.UpdateOrderStatusParams{
+			Status:        repository.OrderStatusCancelled,
+			CancelledAt:   &now,
+			MetadataPatch: metadata,
 		}
-		updatedOrder = saved
+		updatedOrder, err := repo.UpdateStatus(l.ctx, req.OrderID, params)
+		if err != nil {
+			return err
+		}
+		updated = updatedOrder
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	itemsMap, err := l.svcCtx.Repositories.Order.ListItems(l.ctx, []uint64{updatedOrder.ID})
-	if err != nil {
-		return nil, err
-	}
-	refundsMap, err := l.svcCtx.Repositories.Order.ListRefunds(l.ctx, []uint64{updatedOrder.ID})
-	if err != nil {
-		return nil, err
-	}
-
-	detail := orderutil.ToOrderDetail(updatedOrder, itemsMap[updatedOrder.ID], refundsMap[updatedOrder.ID])
 	balance, err := l.svcCtx.Repositories.Balance.GetBalance(l.ctx, user.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	resp = &types.UserOrderResponse{
+	detail := orderutil.ToOrderDetail(updated, items)
+	resp := types.UserOrderResponse{
 		Order:   detail,
 		Balance: orderutil.ToBalanceSnapshot(balance),
 	}
-	return resp, nil
+	return &resp, nil
 }

@@ -30,6 +30,7 @@ func ToOrderDetail(order repository.Order, items []repository.OrderItem, refunds
 		UserID:        order.UserID,
 		Status:        order.Status,
 		TotalCents:    order.TotalCents,
+		RefundedCents: order.RefundedCents,
 		Currency:      order.Currency,
 		PaymentMethod: order.PaymentMethod,
 		PlanSnapshot:  order.PlanSnapshot,
@@ -56,20 +57,6 @@ func ToOrderDetail(order repository.Order, items []repository.OrderItem, refunds
 	if order.RefundedAt != nil {
 		refunded := order.RefundedAt.UTC().Unix()
 		detail.RefundedAt = &refunded
-	}
-
-	var refundRecords []repository.OrderRefund
-	if len(refunds) > 0 {
-		refundRecords = refunds[0]
-	}
-
-	if len(refundRecords) == 0 {
-		detail.Refunds = []types.OrderRefund{}
-	} else {
-		detail.Refunds = make([]types.OrderRefund, 0, len(refundRecords))
-		for _, refund := range refundRecords {
-			detail.Refunds = append(detail.Refunds, ToOrderRefund(refund))
-		}
 	}
 
 	if len(items) == 0 {

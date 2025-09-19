@@ -52,6 +52,7 @@ type BalanceRepository interface {
 	GetBalance(ctx context.Context, userID uint64) (UserBalance, error)
 	ListTransactions(ctx context.Context, userID uint64, opts ListBalanceTransactionsOptions) ([]BalanceTransaction, int64, error)
 	ApplyTransaction(ctx context.Context, userID uint64, tx BalanceTransaction) (BalanceTransaction, UserBalance, error)
+	RecordRefund(ctx context.Context, userID uint64, tx BalanceTransaction) (BalanceTransaction, UserBalance, error)
 }
 
 type balanceRepository struct {

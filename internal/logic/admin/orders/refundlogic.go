@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"gorm.io/gorm"
@@ -14,10 +13,9 @@ import (
 	"github.com/zero-net-panel/zero-net-panel/internal/security"
 	"github.com/zero-net-panel/zero-net-panel/internal/svc"
 	"github.com/zero-net-panel/zero-net-panel/internal/types"
-	"github.com/zero-net-panel/zero-net-panel/pkg/metrics"
 )
 
-// RefundLogic handles administrative order refund operations.
+// RefundLogic handles order refund operations initiated by administrators.
 type RefundLogic struct {
 	logx.Logger
 	ctx    context.Context
@@ -33,151 +31,129 @@ func NewRefundLogic(ctx context.Context, svcCtx *svc.ServiceContext) *RefundLogi
 	}
 }
 
-// Refund records a refund entry and optionally credits the user balance.
-func (l *RefundLogic) Refund(req *types.AdminRefundOrderRequest) (resp *types.AdminOrderResponse, err error) {
-	start := time.Now()
-	defer func() {
-		result := "success"
-		if err != nil {
-			result = "error"
-		}
-		metrics.ObserveOrderRefund("admin", float64(req.AmountCents)/100.0, result, time.Since(start))
-	}()
+// Refund credits balance back to the user and records refund metadata.
+func (l *RefundLogic) Refund(req *types.AdminRefundOrderRequest) (*types.AdminOrderResponse, error) {
+	actor, ok := security.UserFromContext(l.ctx)
+	if !ok {
+		return nil, repository.ErrUnauthorized
+	}
+	if !security.HasRole(actor, "admin") {
+		return nil, repository.ErrForbidden
+	}
 
 	if req.AmountCents <= 0 {
 		return nil, repository.ErrInvalidArgument
 	}
 
-	user, ok := security.UserFromContext(l.ctx)
-	if !ok {
-		return nil, repository.ErrUnauthorized
+	order, items, err := l.svcCtx.Repositories.Order.Get(l.ctx, req.OrderID)
+	if err != nil {
+		return nil, err
 	}
-	if !security.HasRole(user, "admin") {
-		return nil, repository.ErrForbidden
+
+	if order.TotalCents <= 0 {
+		return nil, repository.ErrInvalidArgument
 	}
-	if req.OrderID == 0 {
+	if !strings.EqualFold(order.PaymentMethod, repository.PaymentMethodBalance) {
+		return nil, repository.ErrInvalidArgument
+	}
+	remaining := order.TotalCents - order.RefundedCents
+	if remaining <= 0 || req.AmountCents > remaining {
 		return nil, repository.ErrInvalidArgument
 	}
 
-	var updatedOrder repository.Order
+	var updated repository.Order
 	err = l.svcCtx.DB.WithContext(l.ctx).Transaction(func(tx *gorm.DB) error {
-		orderRepo, repoErr := repository.NewOrderRepository(tx)
-		if repoErr != nil {
-			return repoErr
+		orderRepo, err := repository.NewOrderRepository(tx)
+		if err != nil {
+			return err
 		}
-		balanceRepo, repoErr := repository.NewBalanceRepository(tx)
-		if repoErr != nil {
-			return repoErr
-		}
-
-		order, repoErr := orderRepo.GetForUpdate(l.ctx, req.OrderID)
-		if repoErr != nil {
-			return repoErr
+		balanceRepo, err := repository.NewBalanceRepository(tx)
+		if err != nil {
+			return err
 		}
 
-		switch order.Status {
-		case repository.OrderStatusPaid, repository.OrderStatusPartiallyRefunded, repository.OrderStatusRefunded:
-			// allow
-		default:
-			return repository.ErrInvalidState
+		description := fmt.Sprintf("订单 %s 退款", order.Number)
+		reason := strings.TrimSpace(req.Reason)
+		if reason != "" {
+			description = fmt.Sprintf("%s（%s）", description, reason)
 		}
 
-		available := order.TotalCents - order.RefundedCents
-		if available <= 0 || req.AmountCents > available {
-			return repository.ErrInvalidArgument
+		metadata := map[string]any{
+			"order_id":     order.ID,
+			"order_number": order.Number,
+			"operator":     actor.Email,
+		}
+		for k, v := range req.Metadata {
+			metadata[k] = v
+		}
+		if reason != "" {
+			metadata["reason"] = reason
 		}
 
-		now := time.Now().UTC()
-
-		refundRecord := repository.OrderRefund{
-			OrderID:     order.ID,
+		txRecord := repository.BalanceTransaction{
+			Type:        "refund",
 			AmountCents: req.AmountCents,
-			Reason:      strings.TrimSpace(req.Reason),
-			Reference:   strings.TrimSpace(req.Reference),
-			Metadata:    req.Metadata,
-		}
-		if refundRecord.Metadata == nil {
-			refundRecord.Metadata = make(map[string]any)
-		}
-		refundRecord.Metadata["admin_id"] = user.ID
-
-		if req.CreditBalance {
-			description := fmt.Sprintf("订单退款 %s", order.Number)
-			if refundRecord.Reason != "" {
-				description = fmt.Sprintf("%s (%s)", description, refundRecord.Reason)
-			}
-			txRecord := repository.BalanceTransaction{
-				Type:        "refund",
-				AmountCents: req.AmountCents,
-				Currency:    order.Currency,
-				Reference:   fmt.Sprintf("order:%s", order.Number),
-				Description: description,
-				Metadata: map[string]any{
-					"order_id":     order.ID,
-					"order_number": order.Number,
-					"admin_id":     user.ID,
-				},
-			}
-			if refundRecord.Reference != "" {
-				txRecord.Metadata["reference"] = refundRecord.Reference
-			}
-			if _, _, repoErr = balanceRepo.ApplyTransaction(l.ctx, order.UserID, txRecord); repoErr != nil {
-				return repoErr
-			}
+			Currency:    order.Currency,
+			Reference:   fmt.Sprintf("order:%s", order.Number),
+			Description: description,
+			Metadata:    metadata,
 		}
 
-		if _, repoErr = orderRepo.CreateRefund(l.ctx, refundRecord); repoErr != nil {
-			return repoErr
+		createdTx, _, err := balanceRepo.RecordRefund(l.ctx, order.UserID, txRecord)
+		if err != nil {
+			return err
 		}
 
-		order.RefundedCents += req.AmountCents
-		if order.RefundedCents >= order.TotalCents {
-			order.RefundedCents = order.TotalCents
-			order.Status = repository.OrderStatusRefunded
-		} else {
-			order.Status = repository.OrderStatusPartiallyRefunded
+		metadataPatch := map[string]any{
+			"last_refund_amount": req.AmountCents,
+			"last_refund_tx_id":  createdTx.ID,
+			"last_refund_by":     actor.Email,
 		}
-		order.RefundedAt = &now
-		if order.Metadata == nil {
-			order.Metadata = make(map[string]any)
-		}
-		order.Metadata["last_refund_by"] = fmt.Sprintf("admin:%d", user.ID)
-		order.Metadata["last_refund_at"] = now
-		order.Metadata["last_refund_amount"] = req.AmountCents
-		if refundRecord.Reason != "" {
-			order.Metadata["last_refund_reason"] = refundRecord.Reason
-		}
-		if refundRecord.Reference != "" {
-			order.Metadata["last_refund_reference"] = refundRecord.Reference
+		if reason != "" {
+			metadataPatch["last_refund_reason"] = reason
 		}
 
-		saved, repoErr := orderRepo.Save(l.ctx, order)
-		if repoErr != nil {
-			return repoErr
+		refundParams := repository.AddRefundParams{
+			AmountCents:   req.AmountCents,
+			RefundAt:      createdTx.CreatedAt,
+			MetadataPatch: metadataPatch,
 		}
-		updatedOrder = saved
+
+		updatedOrder, err := orderRepo.AddRefund(l.ctx, req.OrderID, refundParams)
+		if err != nil {
+			return err
+		}
+
+		if updatedOrder.RefundedCents >= order.TotalCents && !strings.EqualFold(updatedOrder.Status, repository.OrderStatusCancelled) {
+			cancelledMetadata := map[string]any{
+				"cancelled_by":  actor.Email,
+				"cancel_reason": "refund_completed",
+			}
+			cancelParams := repository.UpdateOrderStatusParams{
+				Status:        repository.OrderStatusCancelled,
+				CancelledAt:   &createdTx.CreatedAt,
+				MetadataPatch: cancelledMetadata,
+			}
+			cancelledOrder, err := orderRepo.UpdateStatus(l.ctx, req.OrderID, cancelParams)
+			if err != nil {
+				return err
+			}
+			updatedOrder = cancelledOrder
+		}
+
+		updated = updatedOrder
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	itemsMap, err := l.svcCtx.Repositories.Order.ListItems(l.ctx, []uint64{updatedOrder.ID})
+	detail := orderutil.ToOrderDetail(updated, items)
+	u, err := l.svcCtx.Repositories.User.Get(l.ctx, updated.UserID)
 	if err != nil {
 		return nil, err
 	}
-	refundsMap, err := l.svcCtx.Repositories.Order.ListRefunds(l.ctx, []uint64{updatedOrder.ID})
-	if err != nil {
-		return nil, err
-	}
-
-	detail := orderutil.ToOrderDetail(updatedOrder, itemsMap[updatedOrder.ID], refundsMap[updatedOrder.ID])
-	u, err := l.svcCtx.Repositories.User.Get(l.ctx, updatedOrder.UserID)
-	if err != nil {
-		return nil, err
-	}
-
-	resp = &types.AdminOrderResponse{
+	resp := types.AdminOrderResponse{
 		Order: types.AdminOrderDetail{
 			OrderDetail: detail,
 			User: types.OrderUserSummary{
@@ -187,5 +163,5 @@ func (l *RefundLogic) Refund(req *types.AdminRefundOrderRequest) (resp *types.Ad
 			},
 		},
 	}
-	return resp, nil
+	return &resp, nil
 }

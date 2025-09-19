@@ -23,6 +23,10 @@ service znp {
     @doc "Get user order detail"
     @handler UserGetOrder
     get /user/orders/:id(UserGetOrderRequest) returns (UserOrderResponse)
+
+    @doc "Cancel a pending user order"
+    @handler UserCancelOrder
+    post /user/orders/:id/cancel(UserCancelOrderRequest) returns (UserOrderResponse)
 }
 
 type UserCreateOrderRequest {

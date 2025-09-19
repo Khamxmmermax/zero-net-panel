@@ -225,6 +225,11 @@ func RegisterHandlers(server *rest.Server, svcCtx *svc.ServiceContext) {
 			Path:    "/orders/:id",
 			Handler: userOrders.UserGetOrderHandler(svcCtx),
 		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/orders/:id/cancel",
+			Handler: userOrders.UserCancelOrderHandler(svcCtx),
+		},
 	}
 	userRoutes = rest.WithMiddlewares([]rest.Middleware{authMiddleware.RequireRoles("user"), thirdPartyMiddleware.Handler}, userRoutes...)
 	server.AddRoutes(userRoutes, rest.WithPrefix("/api/v1/user"))
