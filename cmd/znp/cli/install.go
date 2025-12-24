@@ -364,14 +364,20 @@ func (w *InstallWizard) createAdminUserStep() error {
 	err = db.Where("email = ?", w.adminEmail).First(&existingUser).Error
 	if err == nil {
 		w.cmd.Println("✓ Admin user already exists, skipping creation")
+		// Clear credentials from memory
+		w.clearCredentials()
 		return nil
 	} else if err != gorm.ErrRecordNotFound {
+		// Clear credentials from memory on error
+		w.clearCredentials()
 		return fmt.Errorf("failed to check existing user: %w", err)
 	}
 
 	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(w.adminPassword), bcrypt.DefaultCost)
 	if err != nil {
+		// Clear credentials from memory on error
+		w.clearCredentials()
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
@@ -385,11 +391,29 @@ func (w *InstallWizard) createAdminUserStep() error {
 	}
 
 	if err := db.Create(&adminUser).Error; err != nil {
+		// Clear credentials from memory on error
+		w.clearCredentials()
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
 
 	w.cmd.Println("✓ Admin user created successfully")
+	
+	// Clear credentials from memory after successful creation
+	w.clearCredentials()
 	return nil
+}
+
+// clearCredentials securely clears sensitive credential data from memory
+func (w *InstallWizard) clearCredentials() {
+	// Overwrite password with zeros before clearing
+	if w.adminPassword != "" {
+		passwordBytes := []byte(w.adminPassword)
+		for i := range passwordBytes {
+			passwordBytes[i] = 0
+		}
+	}
+	w.adminPassword = ""
+	w.adminEmail = ""
 }
 
 func (w *InstallWizard) printSuccess() {
