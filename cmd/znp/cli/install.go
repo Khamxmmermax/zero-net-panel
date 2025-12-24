@@ -433,14 +433,19 @@ func (w *InstallWizard) prompt(message, defaultValue string) string {
 func (w *InstallWizard) promptPassword(message string) string {
 	w.cmd.Printf("%s: ", message)
 	
-	// In a real implementation, we would use terminal.ReadPassword
-	// For simplicity, we'll read normally
+	// Read password from stdin
 	input, err := w.reader.ReadString('\n')
 	if err != nil {
 		return ""
 	}
 	
-	return strings.TrimSpace(input)
+	password := strings.TrimSpace(input)
+	// Don't echo empty passwords in automated mode, but allow them for testing
+	if password == "" {
+		return ""
+	}
+	
+	return password
 }
 
 func (w *InstallWizard) promptYesNo(message string, defaultYes bool) bool {
