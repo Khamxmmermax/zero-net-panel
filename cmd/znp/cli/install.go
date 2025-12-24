@@ -116,11 +116,11 @@ func (w *InstallWizard) printWelcome() {
 	w.cmd.Println("║    Welcome to Zero Network Panel Installation Wizard          ║")
 	w.cmd.Println("╚════════════════════════════════════════════════════════════════╝")
 	w.cmd.Println("\nThis wizard will help you set up Zero Network Panel.")
-	w.cmd.Println("Press Ctrl+C at any time to exit.\n")
+	w.cmd.Println("Press Ctrl+C at any time to exit.")
 }
 
 func (w *InstallWizard) configureDatabaseStep() error {
-	w.cmd.Println("═══ Step 1: Database Configuration ═══\n")
+	w.cmd.Println("═══ Step 1: Database Configuration ═══")
 
 	// Database driver selection
 	w.cmd.Println("Select database driver:")
@@ -164,12 +164,12 @@ func (w *InstallWizard) configureDatabaseStep() error {
 	w.cfg.Database.ConnMaxLifetime = 300 * time.Second
 	w.cfg.Database.LogLevel = "warn"
 
-	w.cmd.Println("\n✓ Database configuration completed\n")
+	w.cmd.Println("\n✓ Database configuration completed")
 	return nil
 }
 
 func (w *InstallWizard) configureServiceStep() error {
-	w.cmd.Println("═══ Step 2: Service Configuration ═══\n")
+	w.cmd.Println("═══ Step 2: Service Configuration ═══")
 
 	w.cfg.Name = "znp.api"
 	w.cfg.Host = w.prompt("Service host", "0.0.0.0")
@@ -193,12 +193,12 @@ func (w *InstallWizard) configureServiceStep() error {
 	w.cfg.Kernel.GRPC.Endpoint = "127.0.0.1:9000"
 	w.cfg.Kernel.GRPC.Timeout = 5 * time.Second
 
-	w.cmd.Println("\n✓ Service configuration completed\n")
+	w.cmd.Println("\n✓ Service configuration completed")
 	return nil
 }
 
 func (w *InstallWizard) configureAuthStep() error {
-	w.cmd.Println("═══ Step 3: JWT Authentication Configuration ═══\n")
+	w.cmd.Println("═══ Step 3: JWT Authentication Configuration ═══")
 
 	w.cmd.Println("Generating secure JWT secrets...")
 
@@ -216,7 +216,7 @@ func (w *InstallWizard) configureAuthStep() error {
 	w.cfg.Auth.RefreshSecret = refreshSecret
 	w.cfg.Auth.RefreshExpire = 720 * time.Hour
 
-	w.cmd.Println("✓ JWT secrets generated successfully\n")
+	w.cmd.Println("✓ JWT secrets generated successfully")
 	return nil
 }
 
@@ -224,7 +224,7 @@ var adminEmail string
 var adminPassword string
 
 func (w *InstallWizard) configureAdminStep() error {
-	w.cmd.Println("═══ Step 4: Admin Account Configuration ═══\n")
+	w.cmd.Println("═══ Step 4: Admin Account Configuration ═══")
 
 	// Email validation regex
 	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -253,12 +253,12 @@ func (w *InstallWizard) configureAdminStep() error {
 		break
 	}
 
-	w.cmd.Println("\n✓ Admin account configuration completed\n")
+	w.cmd.Println("\n✓ Admin account configuration completed")
 	return nil
 }
 
 func (w *InstallWizard) configureOptionalFeaturesStep() error {
-	w.cmd.Println("═══ Step 5: Optional Features ═══\n")
+	w.cmd.Println("═══ Step 5: Optional Features ═══")
 
 	// Metrics configuration
 	enableMetrics := w.promptYesNo("Enable Prometheus metrics", true)
@@ -294,12 +294,12 @@ func (w *InstallWizard) configureOptionalFeaturesStep() error {
 		w.cfg.GRPC.Reflection = &reflection
 	}
 
-	w.cmd.Println("\n✓ Optional features configured\n")
+	w.cmd.Println("\n✓ Optional features configured")
 	return nil
 }
 
 func (w *InstallWizard) saveConfiguration() error {
-	w.cmd.Println("═══ Step 6: Saving Configuration ═══\n")
+	w.cmd.Println("═══ Step 6: Saving Configuration ═══")
 
 	// Normalize configuration
 	w.cfg.Normalize()
@@ -326,7 +326,7 @@ func (w *InstallWizard) saveConfiguration() error {
 }
 
 func (w *InstallWizard) initializeDatabaseStep() error {
-	w.cmd.Println("═══ Step 7: Initializing Database ═══\n")
+	w.cmd.Println("═══ Step 7: Initializing Database ═══")
 
 	db, closeFn, err := database.NewGorm(w.cfg.Database)
 	if err != nil {
@@ -352,7 +352,7 @@ func (w *InstallWizard) initializeDatabaseStep() error {
 }
 
 func (w *InstallWizard) createAdminUserStep() error {
-	w.cmd.Println("═══ Step 8: Creating Admin User ═══\n")
+	w.cmd.Println("═══ Step 8: Creating Admin User ═══")
 
 	db, closeFn, err := database.NewGorm(w.cfg.Database)
 	if err != nil {
@@ -364,7 +364,7 @@ func (w *InstallWizard) createAdminUserStep() error {
 	var existingUser repository.User
 	err = db.Where("email = ?", adminEmail).First(&existingUser).Error
 	if err == nil {
-		w.cmd.Println("✓ Admin user already exists, skipping creation\n")
+		w.cmd.Println("✓ Admin user already exists, skipping creation")
 		return nil
 	} else if err != gorm.ErrRecordNotFound {
 		return fmt.Errorf("failed to check existing user: %w", err)
@@ -389,7 +389,7 @@ func (w *InstallWizard) createAdminUserStep() error {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
 
-	w.cmd.Println("✓ Admin user created successfully\n")
+	w.cmd.Println("✓ Admin user created successfully")
 	return nil
 }
 
