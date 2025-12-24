@@ -105,6 +105,49 @@ go run ./cmd/znp install
    若仅需 HTTP，可追加 `--disable-grpc`；容器或守护进程场景可结合 `--graceful-timeout`、`--log-level` 等参数。
 4. **健康检查与验证**：访问 `GET http://localhost:8888/api/v1/ping` 或 `go run ./cmd/znp tools check-config --config <file>`，确认服务就绪。
 
+### 方式三：使用 Docker（推荐生产部署）
+
+使用 Docker 容器化部署，支持一键启动和自动化运维：
+
+#### 使用 Docker Compose（最简单）
+
+```bash
+cd deploy/docker
+
+# 首次部署：运行安装向导生成配置
+docker-compose -f docker-compose.sqlite.yml run --rm znp install --output /etc/znp/znp.yaml
+
+# 启动服务
+docker-compose -f docker-compose.sqlite.yml up -d
+
+# 查看日志
+docker-compose -f docker-compose.sqlite.yml logs -f
+```
+
+#### 使用 Docker 命令
+
+```bash
+# 1. 构建镜像
+docker build -t znp:latest -f deploy/docker/Dockerfile.cgo .
+
+# 2. 运行安装向导
+mkdir -p ./config ./data
+docker run -it --rm \
+  -v $(pwd)/config:/etc/znp \
+  -v $(pwd)/data:/var/lib/znp \
+  znp:latest install --output /etc/znp/znp.yaml
+
+# 3. 启动服务
+docker run -d \
+  --name znp-server \
+  -v $(pwd)/config:/etc/znp:ro \
+  -v $(pwd)/data:/var/lib/znp \
+  -p 8888:8888 \
+  znp:latest serve --config /etc/znp/znp.yaml --migrate-to latest
+```
+
+更多 Docker 部署选项（MySQL、PostgreSQL、集群部署等）请参考 [Docker 部署指南](deploy/docker/README.md)。
+
 ## 监控与指标
 
 `Metrics` 配置块控制 Prometheus 指标的导出方式：
